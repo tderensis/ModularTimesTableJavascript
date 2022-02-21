@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+  <comment>Created by Thomas DeRensis</comment>
+  <head>
+    <meta charset="utf-8">
+    <title>Modular Times Table Diagram</title>
+  </head>
+  <style type="text/css">
+    .slider {
+        -webkit-appearance: none;
+        width: 100%;
+        height: 15px;
+        border-radius: 5px;
+        background: #d3d3d3;
+        outline: none;
+        opacity: 0.7;
+        -webkit-transition: .2s;
+        transition: opacity .2s;
+    }
+
+  </style>
+
+  <h2>Modular Times Table Diagram</h2>
+
+  <body onresize="redraw()" style="overflow:hidden;">
+    <div class="slidecontainer">
+      <div id="MultiplierText" style="display:inline;">Multiplier: 2</div>
+      <input type="range" min="2" max="10" value="2" class="slider" id="MultiplierSlider">
+    </div>
+    <div class="slidecontainer">
+      <div id="ModulusText" style="display:inline;">Modulus: 9</div>
+      <input type="range" min="2" max="100" value="9" class="slider" id="ModulusSlider">
+    </div>
+
+    <div>Short Line color <input type="text" id="short_line_color_input" value="#FF0000"></div>
+    <div>Long Line color <input type="text" id="long_line_color_input" value="#00FF00"></div>
+
+    <div>
+      <label class="label">
+        <input type="checkbox" id="show_arrows_checkbox" name="show_arrows" onchange="show_arrows_changed(this)">
+        Show arrows
+      </label>
+    </div>
+
+    <canvas id="MyCanvas" style="position:absolute;"></canvas>
+
+    <script>
+      function show_arrows_changed(checkbox)
+      {
+          show_arrows = checkbox.checked;
+          redraw();
+      }
+
+      function draw_circle(context, x, y, radius, line_width=1, line_color='black', fill_color='white')
+      {
+          let circle = new Path2D();
+
+          circle.arc(x, y, radius, 0, 2 * Math.PI);
+
+          context.fillStyle = fill_color;
+          context.fill(circle);
+          context.lineWidth = line_width;
+          context.strokeStyle = line_color;
+          context.stroke(circle);
+      }
+
+      function draw_text(context, x, y, text, font_size, text_color='black')
+      {
+          context.font = font_size + 'px sans-serif';
+          context.fillStyle = text_color;
+          context.textAlign = 'center';
+          context.textBaseline = 'middle';
+          context.fillText(text, x, y);
+      }
+
+      function draw_line(context, start_x, start_y, end_x, end_y, line_width=1, line_color='black')
+      {
+          context.lineWidth = line_width;
+          context.strokeStyle = line_color;
+          context.beginPath();
+          context.moveTo(start_x, start_y);
+          context.lineTo(end_x, end_y);
+          context.closePath();
+          context.stroke();
+      }
+
+      function draw_arrow_tip(context, start_x, start_y, end_x, end_y, line_width=1, line_color='black')
+      {
+          let headlen = 15;
+          let dx = end_x - start_x;
+          let dy = end_y - start_y;
+          let angle = Math.atan2(dy, dx);
+          end_x = (start_x + 0.95*dx);
+          end_y = (start_y + 0.95*dy);
+
+          context.lineWidth = line_width;
+          context.strokeStyle = line_color;
+          context.beginPath();
+          context.moveTo(end_x - headlen * Math.cos(angle - Math.PI / 8),
+                         end_y - headlen * Math.sin(angle - Math.PI / 8));
+          context.lineTo(end_x, end_y);
+          context.lineTo(end_x - headlen * Math.cos(angle + Math.PI / 8),
+                         end_y - headlen * Math.sin(angle + Math.PI / 8));
+          //context.closePath();
+          context.stroke();
+      }
+
+      // return array of [r,g,b,a] from any valid color. if failed returns undefined
+      function color_components(color)
+      {
+          if (color === '')
+              return;
+          if (color.toLowerCase() === 'transparent')
+              return [0, 0, 0, 0];
+          if (color[0] === '#')
+          {
+              if (color.length < 7)
+              {
+                  // convert #RGB and #RGBA to #RRGGBB and #RRGGBBAA
+                  color = '#' + color[1] + color[1] + color[2] + color[2] + color[3] + color[3] + (color.length > 4 ? color[4] + color[4] : '');
+              }
+              return [parseInt(color.substr(1, 2), 16),
+                      parseInt(color.substr(3, 2), 16),
+                      parseInt(color.substr(5, 2), 16),
+                      color.length > 7 ? parseInt(color.substr(7, 2), 16)/255 : 1];
+          }
+          if (color.indexOf('rgb') === -1)
+          {
+              // convert named colors
+              var temp_elem = document.body.appendChild(document.createElement('fictum')); // intentionally use unknown tag to lower chances of css rule override with !important
+              var flag = 'rgb(1, 2, 3)'; // this flag tested on chrome 59, ff 53, ie9, ie10, ie11, edge 14
+              temp_elem.style.color = flag;
+              if (temp_elem.style.color !== flag)
+                  return; // color set failed - some monstrous css rule is probably taking over the color of our object
+              temp_elem.style.color = color;
+              if (temp_elem.style.color === flag || temp_elem.style.color === '')
+                  return; // color parse failed
+              color = getComputedStyle(temp_elem).color;
+              document.body.removeChild(temp_elem);
+          }
+          if (color.indexOf('rgb') === 0)
+          {
+              if (color.indexOf('rgba') === -1)
+                  color += ',1'; // convert 'rgb(R,G,B)' to 'rgb(R,G,B)A' which looks awful but will pass the regxep below
+              return color.match(/[\.\d]+/g).map(function (a)
+                                                 {
+                                                     return +a
+                                                 });
+          }
+      }
+
+      function lerp_color(start_color, end_color, ratio)
+      {
+          let start_colors = color_components(start_color);
+          let end_colors = color_components(end_color);
+
+          let r_diff = end_colors[0] - start_colors[0];
+          let g_diff = end_colors[1] - start_colors[1];
+          let b_diff = end_colors[2] - start_colors[2];
+
+          let r = (r_diff * ratio) + start_colors[0];
+          let g = (g_diff * ratio) + start_colors[1];
+          let b = (b_diff * ratio) + start_colors[2];
+
+          return ["rgb(",r,",",g,",",b,")"].join("");
+      }
+
+      function redraw()
+      {
+          // todo: color lines based on their lengths
+          // add arrows in direction the multiplication goes
+          // loop in different colors.
+          const circle_line_color = 'gray';
+          const circle_line_width = 5;
+          const circle_radius = 200;
+
+          const dot_color = 'orange';
+          const line_color = 'purple';
+
+          const canvas = document.getElementById('MyCanvas');
+          const context = canvas.getContext('2d');
+
+          canvas.width  = window.innerWidth;
+          canvas.height = circle_radius * 2 + 100;
+
+          let dot_xs = new Array(modulus);
+          let dot_ys = new Array(modulus);
+          let points = new Array(modulus);
+
+          let line_width = 3;
+          let font_size = 24;
+          if (modulus < 40)
+          {
+              line_width = 3;
+              font_size = 24;
+          }
+          else if (modulus < 60)
+          {
+              line_width = 2;
+              font_size = 18;
+          }
+          else if (modulus < 80)
+          {
+              line_width = 1;
+              font_size = 14;
+          }
+          else if (modulus < 100)
+          {
+              line_width = 0.5;
+              font_size = 12;
+          }
+          else
+          {
+              line_width = 0.25;
+              font_size = 8;
+          }
+
+          // Draw the outer circle
+          const x = canvas.width / 2;
+          const y = canvas.height / 2;
+          draw_circle(context, x, y, circle_radius, line_width, circle_line_color)
+
+          // Calculate x,y coordinates of the dots, the connecting lines, and draw the text.
+          for (let i = 0; i < modulus; ++i)
+          {
+              let angle = 360/modulus * i * Math.PI/180;
+              let sin_angle = Math.sin(angle);
+              let cos_angle = -Math.cos(angle);
+
+              // Only calculate the dots here, draw them afterwards
+              dot_xs[i] = sin_angle * circle_radius + x;
+              dot_ys[i] = cos_angle * circle_radius + y;
+
+              points[i] = (i*multiplier) % modulus;
+
+              let text_x = sin_angle * (circle_radius + 24) + x;
+              let text_y = cos_angle * (circle_radius + 24) + y;
+              draw_text(context, text_x, text_y, i, font_size);
+          }
+
+          // Calculate the length of each line
+          let lengths = new Array(modulus-1);
+          for (let i = 1; i < modulus; ++i)
+          {
+              let start_x = dot_xs[i];
+              let start_y = dot_ys[i];
+              let end_x = dot_xs[points[i]];
+              let end_y = dot_ys[points[i]];
+              lengths[i-1] = Math.sqrt(
+                  (start_x - end_x) * (start_x - end_x) + (start_y - end_y) * (start_y - end_y));
+          }
+
+          let max_line_length = Math.max(...lengths);
+          let min_line_length = Math.min(...lengths);
+          let max_minus_min_line_length = max_line_length - min_line_length;
+
+
+          // Draw the connecting lines
+          for (let i = 1; i < modulus; ++i)
+          {
+              let start_x = dot_xs[i];
+              let start_y = dot_ys[i];
+              let end_x = dot_xs[points[i]];
+              let end_y = dot_ys[points[i]];
+              let len_ratio = (lengths[i-1] - min_line_length)/max_minus_min_line_length;
+              if (max_minus_min_line_length == 0)
+              {
+                  len_ratio = 0;
+              }
+
+              let line_color = lerp_color(short_line_color, long_line_color, len_ratio);
+              draw_line(context, start_x, start_y, end_x, end_y, line_width, line_color);
+              if (show_arrows)
+              {
+                  draw_arrow_tip(context, start_x, start_y, end_x, end_y, line_width, line_color);
+              }
+          }
+
+          // Draw the dots last so you can't see the start and stop points of the lines.
+          for (let i = 0; i < modulus; ++i)
+          {
+              draw_circle(context, dot_xs[i], dot_ys[i], circle_line_width+1, 1, dot_color, dot_color);
+          }
+      }
+
+      const multiplier_max = 10;
+      const modulus_max = 500;
+
+      var multiplier = 2;
+      var modulus = 9;
+      var short_line_color = '#FF00FF';
+      var long_line_color = '#0000FF';
+      var show_arrows = false;
+
+      // Get the slider values
+      var multiplier_slider = document.getElementById("MultiplierSlider");
+      var multiplier_text = document.getElementById("MultiplierText");
+      multiplier_text.innerHTML = "Multipler: " + multiplier;
+      multiplier_slider.max = multiplier_max;
+      multiplier_slider.value = multiplier;
+
+      multiplier_slider.oninput = function() {
+          multiplier = this.value;
+          multiplier_text.innerHTML = "Multipler: " + this.value;
+          redraw()
+      }
+
+      var modulus_slider = document.getElementById("ModulusSlider");
+      var modulus_text = document.getElementById("ModulusText");
+      modulus_text.innerHTML = "Modulus: " + modulus;
+      modulus_slider.max = modulus_max;
+      modulus_slider.value = modulus;
+
+      modulus_slider.oninput = function() {
+          modulus = this.value;
+          modulus_text.innerHTML = "Modulus: " + this.value;
+          redraw()
+      }
+
+      var short_line_color_field = document.getElementById('short_line_color_input');
+      short_line_color_field.value = short_line_color;
+
+      short_line_color_field.oninput = function() {
+          short_line_color = this.value;
+          redraw()
+      }
+
+      var long_line_color_field = document.getElementById('long_line_color_input');
+      long_line_color_field.value = long_line_color;
+
+      long_line_color_field.oninput = function() {
+          long_line_color = this.value;
+          redraw()
+      }
+
+      var show_arrows_checkbox = document.getElementById('show_arrows_checkbox');
+      show_arrows_checkbox.checked = false;
+
+      redraw();
+    </script>
+    <footer></footer>
+  </body>
+</html>
